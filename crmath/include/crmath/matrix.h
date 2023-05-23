@@ -70,11 +70,11 @@ namespace cr::math {
     template<rvector_type Vec>
     constexpr size_t vector_size() { return Vec::columns(); }
 
-    auto rk4(auto x_curr, auto time, auto dt, auto f) {
-        auto k1 = f(x_curr, time);
-        auto k2 = f(x_curr + dt * k1 / 2, time + dt / 2);
-        auto k3 = f(x_curr + dt * k2 / 2, time + dt / 2);
-        auto k4 = f(x_curr + dt * k3, time + dt);
+    auto rk4(auto x_curr, auto dt, auto f) {
+        auto k1 = f(x_curr);
+        auto k2 = f(x_curr + dt * k1 / 2);
+        auto k3 = f(x_curr + dt * k2 / 2);
+        auto k4 = f(x_curr + dt * k3);
         return x_curr + dt * (k1 + 2 * k2 + 2 * k3 + k4) / 6;
     }
 
