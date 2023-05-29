@@ -21,6 +21,18 @@ CPMAddPackage(
         "BUILD_SHARED_LIBS OFF"
 )
 
+#add freetype
+CPMAddPackage(
+        NAME freetype
+        GITHUB_REPOSITORY freetype/freetype
+        GIT_TAG VER-2-10-4
+        OPTIONS
+        "CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE}"
+        "CMAKE_CXX_FLAGS -fPIC"
+        "CMAKE_C_FLAGS -fPIC"
+        "CMAKE_POSITION_INDEPENDENT_CODE ON"
+)
+
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 file(GLOB_RECURSE TEST_SOURCES "test/*.cpp")
 
@@ -31,7 +43,7 @@ if (NOT SOURCES)
 else ()
     add_library(${SUB_PROJECT_NAME} ${SOURCES})
 endif ()
-target_link_libraries(${SUB_PROJECT_NAME} PUBLIC glfw libglew_static GL crmath crutil)
+target_link_libraries(${SUB_PROJECT_NAME} PUBLIC glfw libglew_static GL crmath crutil freetype)
 
 target_include_directories(${SUB_PROJECT_NAME} INTERFACE include)
 if (SOURCES)

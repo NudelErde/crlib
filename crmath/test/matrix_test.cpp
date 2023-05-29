@@ -2,8 +2,8 @@
 // Created by nudelerde on 20.05.23.
 //
 
-#include <iostream>
 #include "crmath/matrix.h"
+#include <iostream>
 
 int main() {
     using namespace cr::math;
