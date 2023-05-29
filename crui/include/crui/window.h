@@ -60,6 +60,8 @@ struct Window {
 
     [[nodiscard]] cr::math::cvector<int, 2> get_mouse_position() const;
 
+    [[nodiscard]] bool is_mouse_button_pressed(MouseButton button) const;
+
 private:
     bool isOpen = true;
     std::vector<event> events;
