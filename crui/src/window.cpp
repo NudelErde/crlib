@@ -153,5 +153,8 @@ Window::~Window() {
         glfwDestroyWindow(window);
     }
 }
+bool Window::is_mouse_button_pressed(MouseButton button) const {
+    return glfwGetMouseButton(window, static_cast<int>(button)) == GLFW_PRESS;
+}
 
 }// namespace cr::ui
