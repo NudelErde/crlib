@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 project(crlib)
 
-set(CMAKE_CXX_STANDARD 20)
+find_package(Vulkan COMPONENTS glslc REQUIRED)
+find_program(glslc_executable NAMES glslc HINTS Vulkan::glslc)
+
+set(CMAKE_CXX_STANDARD 23)
 include(cmake/CPM.cmake)
 
 enable_testing()
@@ -20,13 +23,14 @@ function(add_crproject)
     endif ()
 
     file(GLOB_RECURSE sources ${CR_DIRECTORY}/src/*.cpp)
+    file(GLOB_RECURSE headers ${CR_DIRECTORY}/include/*.hpp)
     file(GLOB_RECURSE tests ${CR_DIRECTORY}/test/*.cpp)
     if (CR_EXECUTABLE)
-        add_executable(${CR_NAME} ${sources})
+        add_executable(${CR_NAME} ${sources} ${headers})
     elseif (CR_LIBRARY)
         #if no sources, then it's a header only library
         if (sources)
-            add_library(${CR_NAME} ${sources})
+            add_library(${CR_NAME} ${sources} ${headers})
         else ()
             add_library(${CR_NAME} INTERFACE)
         endif ()
@@ -65,7 +69,6 @@ function(add_crproject)
             target_include_directories(${CR_NAME}_${example_name} PRIVATE ${CR_DIRECTORY}/include PRIVATE ${CR_DIRECTORY})
         endforeach ()
     endif ()
-
 endfunction()
 
 add_subdirectory(crutil)

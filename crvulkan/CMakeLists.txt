@@ -8,4 +8,4 @@ CPMAddPackage(
 
 add_crproject(NAME crvulkan
         LIBRARY
-        DEPENDENCIES glfw vulkan)
+        DEPENDENCIES glfw vulkan crutil crmath)
