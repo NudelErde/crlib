@@ -3,12 +3,11 @@
 //
 
 #pragma once
+#include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vulkan/vulkan.hpp>
-#include <vulkan/vulkan_enums.hpp>
-#include <vulkan/vulkan_handles.hpp>
-#include <vulkan/vulkan_structs.hpp>
 
 namespace cr::vulkan {
 
@@ -21,6 +20,88 @@ struct Pipeline;
 struct Queue;
 
 using CommandBuffer = vk::CommandBuffer;
+using VertexInputBindingDescription = vk::VertexInputBindingDescription;
+using VertexInputAttributeDescription = vk::VertexInputAttributeDescription;
+using UniformDescription = vk::DescriptorSetLayoutBinding;
+namespace VertexAttributeFormat {
+constexpr auto eFloatVec1 = vk::Format::eR32Sfloat;
+constexpr auto eFloatVec2 = vk::Format::eR32G32Sfloat;
+constexpr auto eFloatVec3 = vk::Format::eR32G32B32Sfloat;
+constexpr auto eFloatVec4 = vk::Format::eR32G32B32A32Sfloat;
+constexpr auto eSIntVec1 = vk::Format::eR32Sint;
+constexpr auto eSIntVec2 = vk::Format::eR32G32Sint;
+constexpr auto eSIntVec3 = vk::Format::eR32G32B32Sint;
+constexpr auto eSIntVec4 = vk::Format::eR32G32B32A32Sint;
+constexpr auto eUIntVec1 = vk::Format::eR32Uint;
+constexpr auto eUIntVec2 = vk::Format::eR32G32Uint;
+constexpr auto eUIntVec3 = vk::Format::eR32G32B32Uint;
+constexpr auto eUIntVec4 = vk::Format::eR32G32B32A32Uint;
+}// namespace VertexAttributeFormat
+
+struct Buffer : public std::enable_shared_from_this<Buffer> {
+    Buffer() = default;
+    Buffer(const Buffer&) = delete;
+    Buffer(Buffer&&) = delete;
+    Buffer& operator=(const Buffer&) = delete;
+    Buffer& operator=(Buffer&&) = delete;
+    ~Buffer();
+
+    void copyToBuffer(const std::span<const std::byte>& data);
+
+    struct MemoryMapping {
+        std::shared_ptr<Buffer> buffer{};
+        void* data{};
+
+        template<typename T>
+        T* as() {
+            return reinterpret_cast<T*>(data);
+        }
+
+        MemoryMapping(const MemoryMapping&) = delete;
+        MemoryMapping(MemoryMapping&& other) noexcept;
+        MemoryMapping& operator=(const MemoryMapping&) = delete;
+        MemoryMapping& operator=(MemoryMapping&& other) noexcept;
+        MemoryMapping() = default;
+        ~MemoryMapping();
+    };
+
+    MemoryMapping mapMemory();
+
+    vk::Buffer buffer;
+    vk::DeviceMemory memory;
+    vk::DeviceSize size{};
+    std::shared_ptr<LogicalDevice> logicalDevice;
+};
+
+struct UniformPool {
+    UniformPool() = default;
+    UniformPool(const UniformPool&) = delete;
+    UniformPool(UniformPool&&) = delete;
+    UniformPool& operator=(const UniformPool&) = delete;
+    UniformPool& operator=(UniformPool&&) = delete;
+    ~UniformPool();
+
+    void generateBuffers(size_t uniformSize);
+
+    vk::DescriptorPool pool;
+    std::vector<vk::DescriptorSet> sets;
+    std::shared_ptr<LogicalDevice> logicalDevice;
+    std::vector<std::shared_ptr<Buffer>> uniformBuffers;
+    std::vector<Buffer::MemoryMapping> uniformMappings;
+
+    struct UniformData {
+        std::shared_ptr<Buffer> buffer;
+        vk::DescriptorSet set;
+        Buffer::MemoryMapping& mapping;
+    };
+
+    inline UniformData getUniformData(size_t i) {
+        return {uniformBuffers[i], sets[i], uniformMappings[i]};
+    }
+
+private:
+    void bindBuffer(const std::shared_ptr<Buffer>& buffer, size_t setIndex, size_t buffer_offset, size_t buffer_size, size_t binding, size_t arrayElement = 0, size_t count = 1);
+};
 
 struct Semaphore {
     Semaphore() = default;
@@ -58,6 +139,7 @@ struct CommandPool {
     ~CommandPool();
 
     CommandBuffer createCommandBuffer();
+    void freeCommandBuffer(CommandBuffer& commandBuffer);
 
     vk::CommandPool commandPool;
     std::shared_ptr<Queue> queue;
@@ -72,10 +154,23 @@ struct Framebuffers {
     Framebuffers& operator=(Framebuffers&&) = delete;
     ~Framebuffers();
 
+    void deleteFramebuffers();
+    void generateFramebuffers();
+    void regenerateFramebuffer(size_t i);
+
+    inline vk::Framebuffer& getFramebuffer(size_t i) {
+        return framebuffers[i];
+    }
+
+    inline const vk::Framebuffer& getFramebuffer(size_t i) const {
+        return framebuffers[i];
+    }
+
     std::shared_ptr<LogicalDevice> logicalDevice;
     std::vector<vk::Framebuffer> framebuffers;
     std::shared_ptr<SwapChain> swapChain{};
     std::shared_ptr<Pipeline> pipeline{};
+    bool generated{false};
 };
 
 struct Pipeline {
@@ -89,6 +184,7 @@ struct Pipeline {
     vk::Pipeline pipeline;
     vk::PipelineLayout pipelineLayout;
     vk::RenderPass renderPass;
+    vk::DescriptorSetLayout descriptorSetLayout;
     std::shared_ptr<LogicalDevice> logicalDevice;
 };
 
@@ -147,6 +243,8 @@ struct Queue : public std::enable_shared_from_this<Queue> {
 
     void submit(CommandBuffer commandBuffer, const std::shared_ptr<Semaphore>& waitSemaphore,
                 const std::shared_ptr<Semaphore>& signalSemaphore, const std::shared_ptr<Fence>& fence) const;
+    void transferBuffer(const std::shared_ptr<Buffer>& from, const std::shared_ptr<Buffer>& to,
+                        CommandBuffer& buffer, const std::shared_ptr<Fence>& fence) const;
 
     vk::Queue queue;
     uint32_t familyIndex{};
@@ -182,12 +280,18 @@ struct LogicalDevice : public std::enable_shared_from_this<LogicalDevice> {
     std::shared_ptr<Pipeline> createPipeline(const std::shared_ptr<ShaderModule>& vertexShader,
                                              const std::shared_ptr<ShaderModule>& fragmentShader,
                                              vk::PrimitiveTopology topology,
-                                             const std::shared_ptr<SwapChain>& swapChain);
+                                             const std::shared_ptr<SwapChain>& swapChain,
+                                             std::span<const VertexInputAttributeDescription> attributeDescription,
+                                             std::span<const VertexInputBindingDescription> bindingDescription,
+                                             std::span<const UniformDescription> uniformDescriptions);
     std::shared_ptr<Framebuffers> createFramebuffers(const std::shared_ptr<SwapChain>& swapChain,
                                                      const std::shared_ptr<Pipeline>& pipeline);
     std::shared_ptr<CommandPool> createCommandPool(const std::shared_ptr<Queue>& queue);
     std::shared_ptr<Fence> createFence(bool signaled = false);
     std::shared_ptr<Semaphore> createSemaphore();
+    std::shared_ptr<Buffer> createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties);
+    std::shared_ptr<UniformPool> createUniformPool(uint32_t poolSize, const std::shared_ptr<Pipeline>& pipeline);
+
     void waitIdle() const;
     void recreateSwapChain(std::shared_ptr<SwapChain>& swapChain, std::shared_ptr<Framebuffers>& framebuffers,
                            const std::shared_ptr<Surface>& surface, const SwapChainInfo& info, vk::Extent2D extent,
@@ -242,7 +346,71 @@ struct Instance : public std::enable_shared_from_this<Instance> {
     vk::DebugUtilsMessengerEXT debugMessenger;
 };
 
-void prepareCommandBuffer(const CommandBuffer& commandBuffer, const std::shared_ptr<Framebuffers>& framebuffers,
-                          const std::shared_ptr<Pipeline>& pipeline, const std::shared_ptr<SwapChain>& swapChain, size_t index);
+void prepareCommandBuffer(const CommandBuffer& commandBuffer, const std::shared_ptr<Pipeline>& pipeline,
+                          const std::shared_ptr<SwapChain>& swapChain, vk::Framebuffer& framebuffer,
+                          size_t count, const std::span<std::shared_ptr<Buffer>>& vertexBuffers = {},
+                          const std::shared_ptr<Buffer>& indexBuffer = nullptr, vk::DescriptorSet descriptorSet = nullptr);
+
+template<size_t InFlightCount = 1>
+struct InFlightSwap {
+    using recreateFunction = std::function<void()>;
+    using recordFunction = std::function<void(CommandBuffer& command_buffer, uint32_t imageIndex, UniformPool::UniformData uniformData)>;
+
+    InFlightSwap(std::shared_ptr<SwapChain> swapChain,
+                 const std::shared_ptr<CommandPool>& pool,
+                 const std::shared_ptr<Pipeline>& pipeline,
+                 size_t uniformSize,
+                 recordFunction recordCommandBufferCallback,
+                 recreateFunction recreateSwapChainCallback) : swapChain(std::move(swapChain)),
+                                                               recordCommandBufferCallback(std::move(recordCommandBufferCallback)),
+                                                               recreateSwapChainCallback(std::move(recreateSwapChainCallback)) {
+        auto logicalDevice = InFlightSwap::swapChain->logicalDevice;
+        uniformPool = logicalDevice->createUniformPool(InFlightCount, pipeline);
+        uniformPool->generateBuffers(uniformSize);
+        for (int i = 0; i < InFlightCount; ++i) {
+            inFlightFences.push_back(logicalDevice->createFence(true));
+            imageAvailableSemaphores.push_back(logicalDevice->createSemaphore());
+            renderFinishedSemaphores.push_back(logicalDevice->createSemaphore());
+            commandBuffers.push_back(pool->createCommandBuffer());
+        }
+    }
+    InFlightSwap(const InFlightSwap&) = delete;
+    InFlightSwap(InFlightSwap&&) = delete;
+    InFlightSwap& operator=(const InFlightSwap&) = delete;
+    InFlightSwap& operator=(InFlightSwap&&) = delete;
+    ~InFlightSwap() = default;
+
+    void update(bool resized = false) {
+        int index = currentFrame % InFlightCount;
+        inFlightFences[index]->wait();
+        auto image_opt = swapChain->acquireNextImage(imageAvailableSemaphores[index]);
+        if (!image_opt) {
+            recreateSwapChainCallback();
+            return;
+        }
+        inFlightFences[index]->reset();
+        recordCommandBufferCallback(commandBuffers[index], *image_opt, uniformPool->getUniformData(index));
+        swapChain->logicalDevice->graphicsQueue->submit(commandBuffers[index],
+                                                        imageAvailableSemaphores[index],
+                                                        renderFinishedSemaphores[index],
+                                                        inFlightFences[index]);
+        auto success = swapChain->present(renderFinishedSemaphores[index], image_opt.value());
+        if (!success || resized) {
+            recreateSwapChainCallback();
+        }
+        currentFrame++;
+    }
+
+    std::shared_ptr<SwapChain> swapChain;
+
+    std::vector<std::shared_ptr<Fence>> inFlightFences;
+    std::vector<std::shared_ptr<Semaphore>> imageAvailableSemaphores;
+    std::vector<std::shared_ptr<Semaphore>> renderFinishedSemaphores;
+    std::shared_ptr<UniformPool> uniformPool;
+    std::vector<CommandBuffer> commandBuffers;
+    recreateFunction recreateSwapChainCallback;
+    recordFunction recordCommandBufferCallback;
+    int currentFrame = 0;
+};
 
 }// namespace cr::vulkan

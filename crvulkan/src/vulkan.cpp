@@ -10,8 +10,6 @@
 #include <limits>
 #include <map>
 #include <set>
-#include <vulkan/vulkan_handles.hpp>
-#include <vulkan/vulkan_structs.hpp>
 
 static constexpr std::array<const char*, 1> validationLayers = {
         "VK_LAYER_KHRONOS_validation"};
@@ -296,11 +294,13 @@ vk::Extent2D SwapChainInfo::chooseExtent(const std::shared_ptr<Window>& window) 
 }
 
 
-std::shared_ptr<SwapChain> LogicalDevice::createSwapChain(const std::shared_ptr<Surface>& surface, const SwapChainInfo& info,
-                                                          vk::Extent2D extent, vk::PresentModeKHR presentMode,
-                                                          vk::SurfaceFormatKHR surfaceFormat, uint32_t bufferCount) {
+std::shared_ptr<SwapChain>
+LogicalDevice::createSwapChain(const std::shared_ptr<Surface>& surface, const SwapChainInfo& info,
+                               vk::Extent2D extent, vk::PresentModeKHR presentMode,
+                               vk::SurfaceFormatKHR surfaceFormat, uint32_t bufferCount) {
     auto swapChain = std::make_shared<SwapChain>();
     swapChain->logicalDevice = shared_from_this();
+
     vk::SwapchainCreateInfoKHR createInfo;
     createInfo.surface = surface->surface;
     createInfo.minImageCount = bufferCount;
@@ -388,7 +388,10 @@ std::shared_ptr<ShaderModule> LogicalDevice::createShaderModule(const std::vecto
 std::shared_ptr<Pipeline> LogicalDevice::createPipeline(const std::shared_ptr<ShaderModule>& vertexShader,
                                                         const std::shared_ptr<ShaderModule>& fragmentShader,
                                                         vk::PrimitiveTopology topology,
-                                                        const std::shared_ptr<SwapChain>& swapChain) {
+                                                        const std::shared_ptr<SwapChain>& swapChain,
+                                                        std::span<const VertexInputAttributeDescription> attributeDescription,
+                                                        std::span<const VertexInputBindingDescription> bindingDescription,
+                                                        std::span<const UniformDescription> uniformDescriptions) {
     auto pipeline = std::make_shared<Pipeline>();
     pipeline->logicalDevice = shared_from_this();
 
@@ -411,8 +414,10 @@ std::shared_ptr<Pipeline> LogicalDevice::createPipeline(const std::shared_ptr<Sh
     dynamicStateCreateInfo.pDynamicStates = dynamicStates.data();
 
     vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
+    vertexInputInfo.vertexAttributeDescriptionCount = attributeDescription.size();
+    vertexInputInfo.vertexBindingDescriptionCount = bindingDescription.size();
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescription.data();
+    vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
 
     vk::PipelineInputAssemblyStateCreateInfo inputAssembly;
     inputAssembly.topology = topology;
@@ -452,7 +457,17 @@ std::shared_ptr<Pipeline> LogicalDevice::createPipeline(const std::shared_ptr<Sh
     colorBlending.pAttachments = &colorBlendAttachment;
 
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
-    pipelineLayoutInfo.setLayoutCount = 0;
+    if (!uniformDescriptions.empty()) {
+        vk::DescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo;
+        descriptorSetLayoutCreateInfo.pBindings = uniformDescriptions.data();
+        descriptorSetLayoutCreateInfo.bindingCount = uniformDescriptions.size();
+        pipeline->descriptorSetLayout = device.createDescriptorSetLayout(descriptorSetLayoutCreateInfo);
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &pipeline->descriptorSetLayout;
+    } else {
+        pipelineLayoutInfo.setLayoutCount = 0;
+    }
+
     pipelineLayoutInfo.pushConstantRangeCount = 0;
 
     pipeline->pipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
@@ -522,17 +537,27 @@ std::shared_ptr<Pipeline> LogicalDevice::createPipeline(const std::shared_ptr<Sh
 Pipeline::~Pipeline() {
     if (pipelineLayout) {
         logicalDevice->device.destroyPipeline(pipeline);
+        logicalDevice->device.destroyDescriptorSetLayout(descriptorSetLayout);
         logicalDevice->device.destroyPipelineLayout(pipelineLayout);
         logicalDevice->device.destroyRenderPass(renderPass);
     }
 }
 
-std::shared_ptr<Framebuffers> LogicalDevice::createFramebuffers(const std::shared_ptr<SwapChain>& swapChain, const std::shared_ptr<Pipeline>& pipeline) {
+std::shared_ptr<Framebuffers> LogicalDevice::createFramebuffers(const std::shared_ptr<SwapChain>& swapChain,
+                                                                const std::shared_ptr<Pipeline>& pipeline) {
     auto framebuffers = std::make_shared<Framebuffers>();
     framebuffers->swapChain = swapChain;
     framebuffers->pipeline = pipeline;
     framebuffers->logicalDevice = shared_from_this();
     framebuffers->framebuffers.resize(swapChain->imageViews.size());
+    framebuffers->generateFramebuffers();
+    return framebuffers;
+}
+
+void Framebuffers::generateFramebuffers() {
+    if (generated) {
+        throw std::runtime_error("Framebuffers already generated");
+    }
     for (size_t i = 0; i < swapChain->imageViews.size(); i++) {
         vk::ImageView attachments[] = {
                 swapChain->imageViews[i]};
@@ -545,10 +570,40 @@ std::shared_ptr<Framebuffers> LogicalDevice::createFramebuffers(const std::share
         framebufferInfo.height = swapChain->extent.height;
         framebufferInfo.layers = 1;
 
-        auto framebuffer = device.createFramebuffer(framebufferInfo);
-        framebuffers->framebuffers[i] = framebuffer;
+        auto framebuffer = logicalDevice->device.createFramebuffer(framebufferInfo);
+        framebuffers[i] = framebuffer;
     }
-    return framebuffers;
+    generated = true;
+}
+
+void Framebuffers::regenerateFramebuffer(size_t i) {
+    if (!generated) {
+        throw std::runtime_error("Framebuffers not generated");
+    }
+    logicalDevice->device.destroyFramebuffer(framebuffers[i]);
+    vk::ImageView attachments[] = {
+            swapChain->imageViews[i]};
+
+    vk::FramebufferCreateInfo framebufferInfo;
+    framebufferInfo.renderPass = pipeline->renderPass;
+    framebufferInfo.attachmentCount = 1;
+    framebufferInfo.pAttachments = attachments;
+    framebufferInfo.width = swapChain->extent.width;
+    framebufferInfo.height = swapChain->extent.height;
+    framebufferInfo.layers = 1;
+
+    auto framebuffer = logicalDevice->device.createFramebuffer(framebufferInfo);
+    framebuffers[i] = framebuffer;
+}
+
+void Framebuffers::deleteFramebuffers() {
+    if (!generated) {
+        throw std::runtime_error("Framebuffers not generated");
+    }
+    for (auto framebuffer : framebuffers) {
+        logicalDevice->device.destroyFramebuffer(framebuffer);
+    }
+    generated = false;
 }
 
 Framebuffers::~Framebuffers() {
@@ -572,6 +627,7 @@ std::shared_ptr<CommandPool> LogicalDevice::createCommandPool(const std::shared_
 CommandPool::~CommandPool() {
     logicalDevice->device.destroyCommandPool(commandPool);
 }
+
 CommandBuffer CommandPool::createCommandBuffer() {
     vk::CommandBufferAllocateInfo allocInfo;
     allocInfo.commandPool = commandPool;
@@ -583,8 +639,14 @@ CommandBuffer CommandPool::createCommandBuffer() {
     return res[0];
 }
 
-void prepareCommandBuffer(const CommandBuffer& commandBuffer, const std::shared_ptr<Framebuffers>& framebuffers,
-                          const std::shared_ptr<Pipeline>& pipeline, const std::shared_ptr<SwapChain>& swapChain, size_t index) {
+void CommandPool::freeCommandBuffer(CommandBuffer& commandBuffer) {
+    logicalDevice->device.freeCommandBuffers(commandPool, commandBuffer);
+}
+
+void prepareCommandBuffer(const CommandBuffer& commandBuffer, const std::shared_ptr<Pipeline>& pipeline,
+                          const std::shared_ptr<SwapChain>& swapChain, vk::Framebuffer& framebuffer,
+                          size_t count, const std::span<std::shared_ptr<Buffer>>& vertexBuffers,
+                          const std::shared_ptr<Buffer>& indexBuffer, vk::DescriptorSet descriptorSet) {
     vk::CommandBufferBeginInfo beginInfo;
     beginInfo.flags = vk::CommandBufferUsageFlagBits(0);
     beginInfo.pInheritanceInfo = nullptr;
@@ -592,7 +654,7 @@ void prepareCommandBuffer(const CommandBuffer& commandBuffer, const std::shared_
     commandBuffer.begin(beginInfo);
     vk::RenderPassBeginInfo renderPassInfo;
     renderPassInfo.renderPass = pipeline->renderPass;
-    renderPassInfo.framebuffer = framebuffers->framebuffers[index];
+    renderPassInfo.framebuffer = framebuffer;
     renderPassInfo.renderArea.offset = vk::Offset2D(0, 0);
     renderPassInfo.renderArea.extent = swapChain->extent;
     vk::ClearValue clearColor;
@@ -613,7 +675,25 @@ void prepareCommandBuffer(const CommandBuffer& commandBuffer, const std::shared_
     scissor.offset = vk::Offset2D(0, 0);
     scissor.extent = swapChain->extent;
     commandBuffer.setScissor(0, scissor);
-    commandBuffer.draw(3, 1, 0, 0);
+
+    if (descriptorSet) {
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline->pipelineLayout, 0, descriptorSet, nullptr);
+    }
+
+    if (!vertexBuffers.empty()) {
+        std::vector<vk::DeviceSize> offsets(vertexBuffers.size(), 0);
+        std::vector<vk::Buffer> buffers(vertexBuffers.size());
+        for (size_t i = 0; i < vertexBuffers.size(); i++) {
+            buffers[i] = vertexBuffers[i]->buffer;
+        }
+        commandBuffer.bindVertexBuffers(0, buffers, offsets);
+    }
+    if (indexBuffer) {
+        commandBuffer.bindIndexBuffer(indexBuffer->buffer, 0, vk::IndexType::eUint32);
+        commandBuffer.drawIndexed(count, 1, 0, 0, 0);
+    } else {
+        commandBuffer.draw(count, 1, 0, 0);
+    }
     commandBuffer.endRenderPass();
     commandBuffer.end();
 }
@@ -635,6 +715,7 @@ std::shared_ptr<Fence> LogicalDevice::createFence(bool signaled) {
     fence->fence = f;
     return fence;
 }
+
 std::shared_ptr<Semaphore> LogicalDevice::createSemaphore() {
     auto semaphore = std::make_shared<Semaphore>();
     semaphore->logicalDevice = shared_from_this();
@@ -648,31 +729,52 @@ void Fence::wait() {
     auto res = logicalDevice->device.waitForFences(fence, true, UINT64_MAX);
     if (res != vk::Result::eSuccess) throw std::runtime_error("failed to wait for fence");
 }
+
 void Fence::reset() {
     logicalDevice->device.resetFences(fence);
 }
+
 std::optional<uint32_t> SwapChain::acquireNextImage(const std::shared_ptr<Semaphore>& semaphore) {
     try {
         auto res = logicalDevice->device.acquireNextImageKHR(swapChain, UINT64_MAX, semaphore->semaphore, nullptr);
         if (res.result == vk::Result::eSuccess) return res.value;
         if (res.result == vk::Result::eSuboptimalKHR) return res.value;
         if (res.result == vk::Result::eErrorOutOfDateKHR) return std::nullopt;
-    } catch (vk::OutOfDateKHRError& e) {// this try catch is stupid bullshit, bruh ur already using return values >:(
+    } catch (
+            vk::OutOfDateKHRError& e) {// this try catch is stupid bullshit, bruh ur already using return values >:(
         return std::nullopt;
     }
     throw std::runtime_error("failed to acquire next image");
 }
 
-void Queue::submit(CommandBuffer commandBuffer, const std::shared_ptr<Semaphore>& waitSemaphore, const std::shared_ptr<Semaphore>& signalSemaphore, const std::shared_ptr<Fence>& fence) const {
+void Queue::submit(CommandBuffer commandBuffer, const std::shared_ptr<Semaphore>& waitSemaphore,
+                   const std::shared_ptr<Semaphore>& signalSemaphore, const std::shared_ptr<Fence>& fence) const {
     vk::PipelineStageFlags waitStages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
     vk::SubmitInfo submitInfo;
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = &waitSemaphore->semaphore;
+    submitInfo.waitSemaphoreCount = waitSemaphore ? 1 : 0;
+    submitInfo.pWaitSemaphores = waitSemaphore ? &waitSemaphore->semaphore : nullptr;
     submitInfo.pWaitDstStageMask = waitStages;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &signalSemaphore->semaphore;
+    submitInfo.signalSemaphoreCount = signalSemaphore ? 1 : 0;
+    submitInfo.pSignalSemaphores = signalSemaphore ? &signalSemaphore->semaphore : nullptr;
+    queue.submit(submitInfo, fence ? fence->fence : nullptr);
+}
+
+void Queue::transferBuffer(const std::shared_ptr<Buffer>& from, const std::shared_ptr<Buffer>& to,
+                           CommandBuffer& buffer, const std::shared_ptr<Fence>& fence) const {
+    buffer.reset();
+    buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    vk::BufferCopy copyRegion;
+    copyRegion.size = from->size;
+
+    buffer.copyBuffer(from->buffer, to->buffer, copyRegion);
+    buffer.end();
+
+    vk::SubmitInfo submitInfo;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &buffer;
     queue.submit(submitInfo, fence ? fence->fence : nullptr);
 }
 
@@ -690,7 +792,8 @@ bool SwapChain::present(const std::shared_ptr<Semaphore>& waitSemaphore, uint32_
         if (res == vk::Result::eSuboptimalKHR) return false;
         if (res == vk::Result::eErrorOutOfDateKHR) return false;
         if (res == vk::Result::eSuccess) return true;
-    } catch (vk::OutOfDateKHRError& e) {// this try catch is stupid bullshit, bruh ur already using return values >:(
+    } catch (
+            vk::OutOfDateKHRError& e) {// this try catch is stupid bullshit, bruh ur already using return values >:(
         return false;
     }
     throw std::runtime_error("failed to present swap chain image");
@@ -701,13 +804,157 @@ void LogicalDevice::waitIdle() const {
 }
 
 void LogicalDevice::recreateSwapChain(std::shared_ptr<SwapChain>& swapChain, std::shared_ptr<Framebuffers>& framebuffers,
-                                      const std::shared_ptr<Surface>& surface, const SwapChainInfo& info, vk::Extent2D extent,
-                                      vk::PresentModeKHR presentMode, vk::SurfaceFormatKHR surfaceFormat, uint32_t bufferCount) {
+                                      const std::shared_ptr<Surface>& surface, const SwapChainInfo& info,
+                                      vk::Extent2D extent,
+                                      vk::PresentModeKHR presentMode, vk::SurfaceFormatKHR surfaceFormat,
+                                      uint32_t bufferCount) {
     waitIdle();
+    // TODO: this is hyper hacky, fix it using swapchain recreation (the good way with oldSwapChain ptr and destruction of in flight resources and stuff)
     auto pipeline = framebuffers->pipeline;
-    swapChain = std::shared_ptr<SwapChain>();// destroy old swap chain
-    framebuffers = std::shared_ptr<Framebuffers>();
-    swapChain = createSwapChain(surface, info, extent, presentMode, surfaceFormat, bufferCount);
-    framebuffers = createFramebuffers(swapChain, pipeline);
+    framebuffers->deleteFramebuffers();
+    for (auto& imageView : swapChain->imageViews) {
+        device.destroyImageView(imageView);
+    }
+    device.destroySwapchainKHR(swapChain->swapChain);
+    auto newSwapChain = createSwapChain(surface, info, extent, presentMode, surfaceFormat, bufferCount);
+    swapChain->swapChain = newSwapChain->swapChain;
+    swapChain->images = newSwapChain->images;
+    swapChain->imageViews = newSwapChain->imageViews;
+    swapChain->extent = newSwapChain->extent;
+    swapChain->format = newSwapChain->format;
+    newSwapChain->swapChain = nullptr;
+    framebuffers->generateFramebuffers();
 }
+
+Buffer::~Buffer() {
+    logicalDevice->device.destroyBuffer(buffer);
+    logicalDevice->device.freeMemory(memory);
+}
+
+void Buffer::copyToBuffer(const std::span<const std::byte>& data) {
+    void* ptr;
+    auto res = logicalDevice->device.mapMemory(memory, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags(), &ptr);
+    if (res != vk::Result::eSuccess) throw std::runtime_error("failed to map memory");
+    memcpy(ptr, data.data(), data.size());
+    logicalDevice->device.flushMappedMemoryRanges(vk::MappedMemoryRange(memory, 0, VK_WHOLE_SIZE));
+    logicalDevice->device.unmapMemory(memory);
+}
+
+std::shared_ptr<Buffer> LogicalDevice::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties) {
+    auto buffer = std::make_shared<Buffer>();
+    buffer->logicalDevice = shared_from_this();
+    vk::BufferCreateInfo bufferInfo;
+    bufferInfo.size = size;
+    bufferInfo.usage = usage;
+    bufferInfo.sharingMode = vk::SharingMode::eExclusive;
+    auto b = device.createBuffer(bufferInfo);
+    buffer->buffer = b;
+    buffer->size = size;
+
+    auto memRequirements = device.getBufferMemoryRequirements(buffer->buffer);
+    auto memProperties = physicalDevice->physicalDevice.getMemoryProperties();
+    uint32_t memoryTypeIndex = ~0;
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i) {
+        if ((memRequirements.memoryTypeBits & (1 << i)) &&
+            (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            memoryTypeIndex = i;
+            break;
+        }
+    }
+    if (memoryTypeIndex == ~0) throw std::runtime_error("failed to find suitable memory type");
+    vk::MemoryAllocateInfo allocInfo;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = memoryTypeIndex;
+    auto m = device.allocateMemory(allocInfo);
+    buffer->memory = m;
+    device.bindBufferMemory(buffer->buffer, buffer->memory, 0);
+    return buffer;
+}
+
+Buffer::MemoryMapping Buffer::mapMemory() {
+    Buffer::MemoryMapping mapping;
+    mapping.buffer = shared_from_this();
+    auto res = mapping.buffer->logicalDevice->device.mapMemory(memory, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags(),
+                                                               &mapping.data);
+    if (res != vk::Result::eSuccess) throw std::runtime_error("failed to map memory");
+    return mapping;
+}
+
+Buffer::MemoryMapping::~MemoryMapping() {
+    if (buffer)
+        buffer->logicalDevice->device.unmapMemory(buffer->memory);
+}
+
+Buffer::MemoryMapping::MemoryMapping(Buffer::MemoryMapping&& other) noexcept {
+    buffer = other.buffer;
+    data = other.data;
+    other.buffer = nullptr;
+    other.data = nullptr;
+}
+Buffer::MemoryMapping& Buffer::MemoryMapping::operator=(Buffer::MemoryMapping&& other) noexcept {
+    if (this == &other) return *this;
+    if (data) {
+        buffer->logicalDevice->device.unmapMemory(buffer->memory);
+    }
+    buffer = other.buffer;
+    data = other.data;
+    other.buffer = nullptr;
+    other.data = nullptr;
+    return *this;
+}
+
+std::shared_ptr<UniformPool> LogicalDevice::createUniformPool(uint32_t poolSize, const std::shared_ptr<Pipeline>& pipeline) {
+    auto pool = std::make_shared<UniformPool>();
+    vk::DescriptorPoolSize poolSizeInfo;
+    poolSizeInfo.type = vk::DescriptorType::eUniformBuffer;
+    poolSizeInfo.descriptorCount = poolSize;
+    vk::DescriptorPoolCreateInfo poolInfo;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSizeInfo;
+    poolInfo.maxSets = poolSize;
+    pool->pool = device.createDescriptorPool(poolInfo);
+    pool->logicalDevice = shared_from_this();
+    pool->sets.resize(poolSize);
+    std::vector<vk::DescriptorSetLayout> layouts(poolSize, pipeline->descriptorSetLayout);
+    vk::DescriptorSetAllocateInfo allocInfo;
+    allocInfo.descriptorPool = pool->pool;
+    allocInfo.descriptorSetCount = poolSize;
+    allocInfo.pSetLayouts = layouts.data();
+    auto res = device.allocateDescriptorSets(&allocInfo, pool->sets.data());
+    if (res != vk::Result::eSuccess) throw std::runtime_error("failed to allocate descriptor sets");
+    return pool;
+}
+
+UniformPool::~UniformPool() {
+    logicalDevice->device.destroyDescriptorPool(pool);
+}
+
+void UniformPool::bindBuffer(const std::shared_ptr<Buffer>& buffer, size_t setIndex, size_t buffer_offset, size_t buffer_size, size_t binding, size_t arrayElement, size_t count) {
+    vk::DescriptorBufferInfo bufferInfo;
+    bufferInfo.buffer = buffer->buffer;
+    bufferInfo.offset = buffer_offset;
+    bufferInfo.range = buffer_size;
+    vk::WriteDescriptorSet descriptorWrite;
+    descriptorWrite.dstSet = sets[setIndex];
+    descriptorWrite.dstBinding = binding;
+    descriptorWrite.dstArrayElement = arrayElement;
+    descriptorWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
+    descriptorWrite.descriptorCount = count;
+    descriptorWrite.pBufferInfo = &bufferInfo;
+    logicalDevice->device.updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+}
+
+void UniformPool::generateBuffers(size_t uniformSize) {
+    uniformBuffers.clear();
+    uniformMappings.clear();
+    for (size_t i = 0; i < sets.size(); ++i) {
+        auto buffer = logicalDevice->createBuffer(uniformSize, vk::BufferUsageFlagBits::eUniformBuffer,
+                                                  vk::MemoryPropertyFlagBits::eHostVisible |
+                                                          vk::MemoryPropertyFlagBits::eHostCoherent);
+        uniformBuffers.push_back(buffer);
+        uniformMappings.push_back(buffer->mapMemory());
+        bindBuffer(buffer, i, 0, uniformSize, 0, 0, 1);
+    }
+}
+
 }// namespace cr::vulkan
