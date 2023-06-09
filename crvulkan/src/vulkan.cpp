@@ -217,24 +217,6 @@ std::string PhysicalDevice::getDeviceName() const {
     return physicalDevice.getProperties().deviceName;
 }
 
-SwapChainInfo PhysicalDevice::getSwapChainInfo() const {
-    SwapChainInfo info;
-
-    auto surface_ptr = surface.lock();
-    if (!surface_ptr) {
-        throw std::runtime_error("surface not set");
-    }
-
-    auto surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface_ptr->surface);
-    info.capabilities = surfaceCapabilities;
-    auto surfaceFormats = physicalDevice.getSurfaceFormatsKHR(surface_ptr->surface);
-    info.formats = surfaceFormats;
-    auto surfacePresentModes = physicalDevice.getSurfacePresentModesKHR(surface_ptr->surface);
-    info.presentModes = surfacePresentModes;
-
-    return info;
-}
-
 LogicalDevice::~LogicalDevice() {
     if (device)
         device.destroy();
@@ -251,115 +233,6 @@ std::shared_ptr<Surface> Instance::createSurface(const std::shared_ptr<Window>& 
     }
     surface->surface = surfaceHandle;
     return surface;
-}
-
-vk::SurfaceFormatKHR SwapChainInfo::chooseSurfaceFormat() const {
-    for (const auto& availableFormat : formats) {
-        if (availableFormat.format == vk::Format::eB8G8R8A8Srgb &&
-            availableFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-            return availableFormat;
-        }
-    }
-
-    return formats[0];
-}
-
-vk::PresentModeKHR SwapChainInfo::choosePresentMode() const {
-    for (const auto& availablePresentMode : presentModes) {
-        if (availablePresentMode == vk::PresentModeKHR::eMailbox) {
-            return availablePresentMode;
-        }
-    }
-    return vk::PresentModeKHR::eFifo;
-}
-
-vk::Extent2D SwapChainInfo::chooseExtent(const std::shared_ptr<Window>& window) const {
-    if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
-        return capabilities.currentExtent;
-    } else {
-        int width, height;
-        glfwGetFramebufferSize(window->window, &width, &height);
-
-        VkExtent2D actualExtent = {
-                static_cast<uint32_t>(width),
-                static_cast<uint32_t>(height)};
-
-        actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width,
-                                        capabilities.maxImageExtent.width);
-        actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height,
-                                         capabilities.maxImageExtent.height);
-
-        return actualExtent;
-    }
-}
-
-
-std::shared_ptr<SwapChain>
-LogicalDevice::createSwapChain(const std::shared_ptr<Surface>& surface, const SwapChainInfo& info,
-                               vk::Extent2D extent, vk::PresentModeKHR presentMode,
-                               vk::SurfaceFormatKHR surfaceFormat, uint32_t bufferCount) {
-    auto swapChain = std::make_shared<SwapChain>();
-    swapChain->logicalDevice = shared_from_this();
-
-    vk::SwapchainCreateInfoKHR createInfo;
-    createInfo.surface = surface->surface;
-    createInfo.minImageCount = bufferCount;
-    createInfo.imageFormat = surfaceFormat.format;
-    createInfo.imageColorSpace = surfaceFormat.colorSpace;
-    createInfo.imageExtent = extent;
-    createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
-
-    if (presentQueue->familyIndex != graphicsQueue->familyIndex) {
-        uint32_t queueFamilyIndices[] = {graphicsQueue->familyIndex, presentQueue->familyIndex};
-        createInfo.imageSharingMode = vk::SharingMode::eConcurrent;
-        createInfo.queueFamilyIndexCount = 2;
-        createInfo.pQueueFamilyIndices = queueFamilyIndices;
-    } else {
-        createInfo.imageSharingMode = vk::SharingMode::eExclusive;
-    }
-    createInfo.preTransform = info.capabilities.currentTransform;
-    createInfo.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
-    createInfo.presentMode = presentMode;
-    createInfo.clipped = VK_TRUE;
-    createInfo.oldSwapchain = nullptr;
-    auto res = device.createSwapchainKHR(&createInfo, nullptr, &swapChain->swapChain);
-    if (res != vk::Result::eSuccess) {
-        throw std::runtime_error("failed to create swap chain!");
-    }
-
-    swapChain->images = device.getSwapchainImagesKHR(swapChain->swapChain);
-    swapChain->format = surfaceFormat.format;
-    swapChain->extent = extent;
-    swapChain->presentMode = presentMode;
-
-    for (auto& image : swapChain->images) {
-        vk::ImageViewCreateInfo ivCreateInfo;
-        ivCreateInfo.image = image;
-        ivCreateInfo.viewType = vk::ImageViewType::e2D;
-        ivCreateInfo.format = swapChain->format;
-        ivCreateInfo.components.r = vk::ComponentSwizzle::eIdentity;
-        ivCreateInfo.components.g = vk::ComponentSwizzle::eIdentity;
-        ivCreateInfo.components.b = vk::ComponentSwizzle::eIdentity;
-        ivCreateInfo.components.a = vk::ComponentSwizzle::eIdentity;
-        ivCreateInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-        ivCreateInfo.subresourceRange.baseMipLevel = 0;
-        ivCreateInfo.subresourceRange.levelCount = 1;
-        ivCreateInfo.subresourceRange.baseArrayLayer = 0;
-        ivCreateInfo.subresourceRange.layerCount = 1;
-        swapChain->imageViews.push_back(device.createImageView(ivCreateInfo));
-    }
-
-    return swapChain;
-}
-
-SwapChain::~SwapChain() {
-    if (swapChain) {
-        for (auto& imageView : imageViews) {
-            logicalDevice->device.destroyImageView(imageView);
-        }
-        logicalDevice->device.destroySwapchainKHR(swapChain);
-    }
 }
 
 Surface::~Surface() {
@@ -383,164 +256,6 @@ std::shared_ptr<ShaderModule> LogicalDevice::createShaderModule(const std::vecto
         throw std::runtime_error("failed to create shader module!");
     }
     return shaderModule;
-}
-
-std::shared_ptr<Pipeline> LogicalDevice::createPipeline(const std::shared_ptr<ShaderModule>& vertexShader,
-                                                        const std::shared_ptr<ShaderModule>& fragmentShader,
-                                                        vk::PrimitiveTopology topology,
-                                                        const std::shared_ptr<SwapChain>& swapChain,
-                                                        std::span<const VertexInputAttributeDescription> attributeDescription,
-                                                        std::span<const VertexInputBindingDescription> bindingDescription,
-                                                        std::span<const UniformDescription> uniformDescriptions) {
-    auto pipeline = std::make_shared<Pipeline>();
-    pipeline->logicalDevice = shared_from_this();
-
-    vk::PipelineShaderStageCreateInfo vertexShaderStageInfo;
-    vertexShaderStageInfo.stage = vk::ShaderStageFlagBits::eVertex;
-    vertexShaderStageInfo.module = vertexShader->shaderModule;
-    vertexShaderStageInfo.pName = "main";
-    vk::PipelineShaderStageCreateInfo fragmentShaderStageInfo;
-    fragmentShaderStageInfo.stage = vk::ShaderStageFlagBits::eFragment;
-    fragmentShaderStageInfo.module = fragmentShader->shaderModule;
-    fragmentShaderStageInfo.pName = "main";
-
-    vk::PipelineShaderStageCreateInfo shaderStages[] = {vertexShaderStageInfo, fragmentShaderStageInfo};
-
-    std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport,
-                                                   vk::DynamicState::eScissor};
-
-    vk::PipelineDynamicStateCreateInfo dynamicStateCreateInfo;
-    dynamicStateCreateInfo.dynamicStateCount = dynamicStates.size();
-    dynamicStateCreateInfo.pDynamicStates = dynamicStates.data();
-
-    vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
-    vertexInputInfo.vertexAttributeDescriptionCount = attributeDescription.size();
-    vertexInputInfo.vertexBindingDescriptionCount = bindingDescription.size();
-    vertexInputInfo.pVertexAttributeDescriptions = attributeDescription.data();
-    vertexInputInfo.pVertexBindingDescriptions = bindingDescription.data();
-
-    vk::PipelineInputAssemblyStateCreateInfo inputAssembly;
-    inputAssembly.topology = topology;
-    inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-    vk::PipelineViewportStateCreateInfo viewportState;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-
-    vk::PipelineRasterizationStateCreateInfo rasterizer;
-    rasterizer.depthClampEnable = VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer.polygonMode = vk::PolygonMode::eFill;
-    rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = vk::CullModeFlagBits::eBack;
-    rasterizer.frontFace = vk::FrontFace::eClockwise;
-    rasterizer.depthBiasEnable = VK_FALSE;
-
-    vk::PipelineMultisampleStateCreateInfo multisampling;
-    multisampling.sampleShadingEnable = VK_FALSE;
-    multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
-
-    vk::PipelineColorBlendAttachmentState colorBlendAttachment;
-    colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-    colorBlendAttachment.blendEnable = VK_TRUE;
-    colorBlendAttachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
-    colorBlendAttachment.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
-    colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
-    colorBlendAttachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
-    colorBlendAttachment.dstAlphaBlendFactor = vk::BlendFactor::eZero;
-    colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
-
-    vk::PipelineColorBlendStateCreateInfo colorBlending;
-    colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
-
-    vk::PipelineLayoutCreateInfo pipelineLayoutInfo;
-    if (!uniformDescriptions.empty()) {
-        vk::DescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo;
-        descriptorSetLayoutCreateInfo.pBindings = uniformDescriptions.data();
-        descriptorSetLayoutCreateInfo.bindingCount = uniformDescriptions.size();
-        pipeline->descriptorSetLayout = device.createDescriptorSetLayout(descriptorSetLayoutCreateInfo);
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &pipeline->descriptorSetLayout;
-    } else {
-        pipelineLayoutInfo.setLayoutCount = 0;
-    }
-
-    pipelineLayoutInfo.pushConstantRangeCount = 0;
-
-    pipeline->pipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
-
-    vk::AttachmentDescription colorAttachment;
-    colorAttachment.format = swapChain->format;
-    colorAttachment.samples = vk::SampleCountFlagBits::e1;
-    colorAttachment.loadOp = vk::AttachmentLoadOp::eClear;
-    colorAttachment.storeOp = vk::AttachmentStoreOp::eStore;
-    colorAttachment.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
-    colorAttachment.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
-    colorAttachment.initialLayout = vk::ImageLayout::eUndefined;
-    colorAttachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
-
-    vk::AttachmentReference colorAttachmentRef;
-    colorAttachmentRef.attachment = 0;
-    colorAttachmentRef.layout = vk::ImageLayout::eColorAttachmentOptimal;
-
-    vk::SubpassDescription subpass;
-    subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorAttachmentRef;
-
-    vk::RenderPassCreateInfo renderPassInfo;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &colorAttachment;
-    renderPassInfo.subpassCount = 1;
-    renderPassInfo.pSubpasses = &subpass;
-
-    vk::SubpassDependency dependency;
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-    dependency.srcAccessMask = vk::AccessFlags();
-    dependency.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-    dependency.dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
-
-    renderPassInfo.dependencyCount = 1;
-    renderPassInfo.pDependencies = &dependency;
-
-    pipeline->renderPass = device.createRenderPass(renderPassInfo);
-
-    vk::GraphicsPipelineCreateInfo pipelineInfo;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages;
-    pipelineInfo.pVertexInputState = &vertexInputInfo;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = nullptr;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicStateCreateInfo;
-    pipelineInfo.layout = pipeline->pipelineLayout;
-    pipelineInfo.renderPass = pipeline->renderPass;
-    pipelineInfo.subpass = 0;
-    pipelineInfo.basePipelineHandle = nullptr;
-    pipelineInfo.basePipelineIndex = -1;
-    auto pipe = device.createGraphicsPipeline(nullptr, pipelineInfo);
-    if (pipe.result != vk::Result::eSuccess) {
-        throw std::runtime_error("failed to create graphics pipeline!");
-    }
-    pipeline->pipeline = pipe.value;
-    return pipeline;
-}
-
-Pipeline::~Pipeline() {
-    if (pipelineLayout) {
-        logicalDevice->device.destroyPipeline(pipeline);
-        logicalDevice->device.destroyDescriptorSetLayout(descriptorSetLayout);
-        logicalDevice->device.destroyPipelineLayout(pipelineLayout);
-        logicalDevice->device.destroyRenderPass(renderPass);
-    }
 }
 
 std::shared_ptr<Framebuffers> LogicalDevice::createFramebuffers(const std::shared_ptr<SwapChain>& swapChain,
@@ -734,227 +449,34 @@ void Fence::reset() {
     logicalDevice->device.resetFences(fence);
 }
 
-std::optional<uint32_t> SwapChain::acquireNextImage(const std::shared_ptr<Semaphore>& semaphore) {
-    try {
-        auto res = logicalDevice->device.acquireNextImageKHR(swapChain, UINT64_MAX, semaphore->semaphore, nullptr);
-        if (res.result == vk::Result::eSuccess) return res.value;
-        if (res.result == vk::Result::eSuboptimalKHR) return res.value;
-        if (res.result == vk::Result::eErrorOutOfDateKHR) return std::nullopt;
-    } catch (
-            vk::OutOfDateKHRError& e) {// this try catch is stupid bullshit, bruh ur already using return values >:(
-        return std::nullopt;
-    }
-    throw std::runtime_error("failed to acquire next image");
-}
-
-void Queue::submit(CommandBuffer commandBuffer, const std::shared_ptr<Semaphore>& waitSemaphore,
-                   const std::shared_ptr<Semaphore>& signalSemaphore, const std::shared_ptr<Fence>& fence) const {
-    vk::PipelineStageFlags waitStages[] = {vk::PipelineStageFlagBits::eColorAttachmentOutput};
-    vk::SubmitInfo submitInfo;
-    submitInfo.waitSemaphoreCount = waitSemaphore ? 1 : 0;
-    submitInfo.pWaitSemaphores = waitSemaphore ? &waitSemaphore->semaphore : nullptr;
-    submitInfo.pWaitDstStageMask = waitStages;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-    submitInfo.signalSemaphoreCount = signalSemaphore ? 1 : 0;
-    submitInfo.pSignalSemaphores = signalSemaphore ? &signalSemaphore->semaphore : nullptr;
-    queue.submit(submitInfo, fence ? fence->fence : nullptr);
-}
-
-void Queue::transferBuffer(const std::shared_ptr<Buffer>& from, const std::shared_ptr<Buffer>& to,
-                           CommandBuffer& buffer, const std::shared_ptr<Fence>& fence) const {
-    buffer.reset();
-    buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    vk::BufferCopy copyRegion;
-    copyRegion.size = from->size;
-
-    buffer.copyBuffer(from->buffer, to->buffer, copyRegion);
-    buffer.end();
-
-    vk::SubmitInfo submitInfo;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &buffer;
-    queue.submit(submitInfo, fence ? fence->fence : nullptr);
-}
-
-bool SwapChain::present(const std::shared_ptr<Semaphore>& waitSemaphore, uint32_t imageIndex) {
-    vk::PresentInfoKHR presentInfo;
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &waitSemaphore->semaphore;
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &swapChain;
-    presentInfo.pImageIndices = &imageIndex;
-    presentInfo.pResults = nullptr;
-
-    try {
-        auto res = logicalDevice->presentQueue->queue.presentKHR(presentInfo);
-        if (res == vk::Result::eSuboptimalKHR) return false;
-        if (res == vk::Result::eErrorOutOfDateKHR) return false;
-        if (res == vk::Result::eSuccess) return true;
-    } catch (
-            vk::OutOfDateKHRError& e) {// this try catch is stupid bullshit, bruh ur already using return values >:(
-        return false;
-    }
-    throw std::runtime_error("failed to present swap chain image");
-}
 
 void LogicalDevice::waitIdle() const {
     device.waitIdle();
 }
 
-void LogicalDevice::recreateSwapChain(std::shared_ptr<SwapChain>& swapChain, std::shared_ptr<Framebuffers>& framebuffers,
-                                      const std::shared_ptr<Surface>& surface, const SwapChainInfo& info,
-                                      vk::Extent2D extent,
-                                      vk::PresentModeKHR presentMode, vk::SurfaceFormatKHR surfaceFormat,
-                                      uint32_t bufferCount) {
-    waitIdle();
-    // TODO: this is hyper hacky, fix it using swapchain recreation (the good way with oldSwapChain ptr and destruction of in flight resources and stuff)
-    auto pipeline = framebuffers->pipeline;
-    framebuffers->deleteFramebuffers();
-    for (auto& imageView : swapChain->imageViews) {
-        device.destroyImageView(imageView);
-    }
-    device.destroySwapchainKHR(swapChain->swapChain);
-    auto newSwapChain = createSwapChain(surface, info, extent, presentMode, surfaceFormat, bufferCount);
-    swapChain->swapChain = newSwapChain->swapChain;
-    swapChain->images = newSwapChain->images;
-    swapChain->imageViews = newSwapChain->imageViews;
-    swapChain->extent = newSwapChain->extent;
-    swapChain->format = newSwapChain->format;
-    newSwapChain->swapChain = nullptr;
-    framebuffers->generateFramebuffers();
-}
-
-Buffer::~Buffer() {
-    logicalDevice->device.destroyBuffer(buffer);
-    logicalDevice->device.freeMemory(memory);
-}
-
-void Buffer::copyToBuffer(const std::span<const std::byte>& data) {
-    void* ptr;
-    auto res = logicalDevice->device.mapMemory(memory, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags(), &ptr);
-    if (res != vk::Result::eSuccess) throw std::runtime_error("failed to map memory");
-    memcpy(ptr, data.data(), data.size());
-    logicalDevice->device.flushMappedMemoryRanges(vk::MappedMemoryRange(memory, 0, VK_WHOLE_SIZE));
-    logicalDevice->device.unmapMemory(memory);
-}
-
-std::shared_ptr<Buffer> LogicalDevice::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties) {
-    auto buffer = std::make_shared<Buffer>();
-    buffer->logicalDevice = shared_from_this();
-    vk::BufferCreateInfo bufferInfo;
-    bufferInfo.size = size;
-    bufferInfo.usage = usage;
-    bufferInfo.sharingMode = vk::SharingMode::eExclusive;
-    auto b = device.createBuffer(bufferInfo);
-    buffer->buffer = b;
-    buffer->size = size;
-
-    auto memRequirements = device.getBufferMemoryRequirements(buffer->buffer);
+uint32_t LogicalDevice::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) {
     auto memProperties = physicalDevice->physicalDevice.getMemoryProperties();
     uint32_t memoryTypeIndex = ~0;
     for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i) {
-        if ((memRequirements.memoryTypeBits & (1 << i)) &&
+        if ((typeFilter & (1 << i)) &&
             (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
             memoryTypeIndex = i;
             break;
         }
     }
     if (memoryTypeIndex == ~0) throw std::runtime_error("failed to find suitable memory type");
-    vk::MemoryAllocateInfo allocInfo;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = memoryTypeIndex;
-    auto m = device.allocateMemory(allocInfo);
-    buffer->memory = m;
-    device.bindBufferMemory(buffer->buffer, buffer->memory, 0);
-    return buffer;
+    return memoryTypeIndex;
 }
 
-Buffer::MemoryMapping Buffer::mapMemory() {
-    Buffer::MemoryMapping mapping;
-    mapping.buffer = shared_from_this();
-    auto res = mapping.buffer->logicalDevice->device.mapMemory(memory, 0, VK_WHOLE_SIZE, vk::MemoryMapFlags(),
-                                                               &mapping.data);
-    if (res != vk::Result::eSuccess) throw std::runtime_error("failed to map memory");
-    return mapping;
-}
 
-Buffer::MemoryMapping::~MemoryMapping() {
-    if (buffer)
-        buffer->logicalDevice->device.unmapMemory(buffer->memory);
-}
-
-Buffer::MemoryMapping::MemoryMapping(Buffer::MemoryMapping&& other) noexcept {
-    buffer = other.buffer;
-    data = other.data;
-    other.buffer = nullptr;
-    other.data = nullptr;
-}
-Buffer::MemoryMapping& Buffer::MemoryMapping::operator=(Buffer::MemoryMapping&& other) noexcept {
-    if (this == &other) return *this;
-    if (data) {
-        buffer->logicalDevice->device.unmapMemory(buffer->memory);
-    }
-    buffer = other.buffer;
-    data = other.data;
-    other.buffer = nullptr;
-    other.data = nullptr;
-    return *this;
-}
-
-std::shared_ptr<UniformPool> LogicalDevice::createUniformPool(uint32_t poolSize, const std::shared_ptr<Pipeline>& pipeline) {
-    auto pool = std::make_shared<UniformPool>();
-    vk::DescriptorPoolSize poolSizeInfo;
-    poolSizeInfo.type = vk::DescriptorType::eUniformBuffer;
-    poolSizeInfo.descriptorCount = poolSize;
-    vk::DescriptorPoolCreateInfo poolInfo;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSizeInfo;
-    poolInfo.maxSets = poolSize;
-    pool->pool = device.createDescriptorPool(poolInfo);
-    pool->logicalDevice = shared_from_this();
-    pool->sets.resize(poolSize);
-    std::vector<vk::DescriptorSetLayout> layouts(poolSize, pipeline->descriptorSetLayout);
-    vk::DescriptorSetAllocateInfo allocInfo;
-    allocInfo.descriptorPool = pool->pool;
-    allocInfo.descriptorSetCount = poolSize;
-    allocInfo.pSetLayouts = layouts.data();
-    auto res = device.allocateDescriptorSets(&allocInfo, pool->sets.data());
-    if (res != vk::Result::eSuccess) throw std::runtime_error("failed to allocate descriptor sets");
-    return pool;
-}
-
-UniformPool::~UniformPool() {
-    logicalDevice->device.destroyDescriptorPool(pool);
-}
-
-void UniformPool::bindBuffer(const std::shared_ptr<Buffer>& buffer, size_t setIndex, size_t buffer_offset, size_t buffer_size, size_t binding, size_t arrayElement, size_t count) {
-    vk::DescriptorBufferInfo bufferInfo;
-    bufferInfo.buffer = buffer->buffer;
-    bufferInfo.offset = buffer_offset;
-    bufferInfo.range = buffer_size;
-    vk::WriteDescriptorSet descriptorWrite;
-    descriptorWrite.dstSet = sets[setIndex];
-    descriptorWrite.dstBinding = binding;
-    descriptorWrite.dstArrayElement = arrayElement;
-    descriptorWrite.descriptorType = vk::DescriptorType::eUniformBuffer;
-    descriptorWrite.descriptorCount = count;
-    descriptorWrite.pBufferInfo = &bufferInfo;
-    logicalDevice->device.updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
-}
-
-void UniformPool::generateBuffers(size_t uniformSize) {
-    uniformBuffers.clear();
-    uniformMappings.clear();
-    for (size_t i = 0; i < sets.size(); ++i) {
-        auto buffer = logicalDevice->createBuffer(uniformSize, vk::BufferUsageFlagBits::eUniformBuffer,
-                                                  vk::MemoryPropertyFlagBits::eHostVisible |
-                                                          vk::MemoryPropertyFlagBits::eHostCoherent);
-        uniformBuffers.push_back(buffer);
-        uniformMappings.push_back(buffer->mapMemory());
-        bindBuffer(buffer, i, 0, uniformSize, 0, 0, 1);
-    }
+vk::DescriptorSetLayoutBinding createSamplerLayoutBinding(uint32_t binding) {
+    vk::DescriptorSetLayoutBinding samplerLayoutBinding;
+    samplerLayoutBinding.binding = binding;
+    samplerLayoutBinding.descriptorCount = 1;
+    samplerLayoutBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    samplerLayoutBinding.pImmutableSamplers = nullptr;
+    samplerLayoutBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+    return samplerLayoutBinding;
 }
 
 }// namespace cr::vulkan
